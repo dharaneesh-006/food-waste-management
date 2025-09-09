@@ -9,6 +9,10 @@
     --font-playfair: "Playfair Display",serif;
 }
 
+*{
+    scroll-behavior: smooth;
+}
+
 
 .food-background {
           position: fixed;
