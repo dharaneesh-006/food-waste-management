@@ -2,6 +2,7 @@ import React, { useRef } from "react";
 import { gsap } from "gsap";
 import { useGSAP } from "@gsap/react";
 import { useNavigate } from "react-router-dom";
+import GoogleIcon from "@mui/icons-material/Google";
 
 const Intro = () => {
   const container = useRef();
@@ -235,19 +236,9 @@ const Intro = () => {
             onClick={() => handleAuthClick("register")}
             className="bg-orange-500 p-5 text-2xl text-white rounded-2xl w-full max-w-xs"
           >
-            Register
+            Join Our Community
           </button>
-          <p className="text-2xl text-center flex items-center gap-2 w-full max-w-xs">
-            <hr className="flex-1" />
-            or
-            <hr className="flex-1" />
-          </p>
-          <button
-            onClick={() => handleAuthClick("login")}
-            className="bg-orange-500 p-5 text-2xl text-white rounded-2xl w-full max-w-xs"
-          >
-            Login
-          </button>
+          
         </div>
       </section>
     </div>

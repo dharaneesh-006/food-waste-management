@@ -1,151 +1,359 @@
-import React, { useState, useEffect } from "react";
-import { useLocation } from "react-router-dom";
+import React, { useState, useEffect, useRef } from "react";
+import gsap from "gsap";
+import Stack from "@mui/material/Stack";
+import Alert from "@mui/material/Alert";
+import GoogleIcon from "@mui/icons-material/Google";
+
+import {
+  getAuth,
+  signInWithEmailAndPassword,
+  createUserWithEmailAndPassword,
+  signInWithPopup,
+  GoogleAuthProvider,
+  RecaptchaVerifier,
+  signInWithPhoneNumber,
+} from "firebase/auth";
+import { getFirestore, doc, setDoc, getDoc } from "firebase/firestore";
+import { app } from "./firebase"; // adjust path
+
+import { useLoading } from "./LoadingContext.jsx";
+import LoadingSpinner from "./LoadingSpinner.jsx"; // adjust path
+
+const auth = getAuth(app);
+const db = getFirestore(app);
+const googleProvider = new GoogleAuthProvider();
 
 const AuthPage = () => {
-  const location = useLocation();
-  const params = new URLSearchParams(location.search);
-  const modeParam = params.get("mode");
+  const { loading, setLoading } = useLoading(); // <-- use loading context
 
-  const [isLogin, setIsLogin] = useState(modeParam === "login");
-  const [formData, setFormData] = useState({
-    name: "",
-    email: "",
-    password: "",
-    role: "volunteer",
-  });
+  const [isLogin, setIsLogin] = useState(true);
+  const [name, setName] = useState("");
+  const [mobile, setMobile] = useState("");
+  const [mobileVerified, setMobileVerified] = useState(false);
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [role, setRole] = useState("volunteer");
+  const [error, setError] = useState("");
+  const alertRef = useRef(null);
+  const [showRoleSelect, setShowRoleSelect] = useState(false);
+  const [googleUser, setGoogleUser] = useState(null);
 
-  useEffect(() => {
-    setIsLogin(modeParam === "login");
-  }, [modeParam]);
-
-  const toggleMode = () => setIsLogin(!isLogin);
-
-  const handleChange = (e) => {
-    setFormData({ ...formData, [e.target.name]: e.target.value });
+  // Save user data in Firestore
+  const saveUserRole = async (uid, role, name, email, mobile) => {
+    await setDoc(doc(db, "users", uid), { role, name, email, mobile });
   };
 
-  const handleSubmit = (e) => {
-    e.preventDefault();
-    if (isLogin) {
-      console.log("Logging in with", formData);
-    } else {
-      console.log("Registering with", formData);
+  // Get user role
+  const getUserRole = async (uid) => {
+    const snap = await getDoc(doc(db, "users", uid));
+    return snap.exists() ? snap.data().role : null;
+  };
+
+  // Redirect
+  const redirectToDashboard = (role) => {
+    if (role === "volunteer") window.location.href = "/volunteer-dashboard";
+    if (role === "ngo") window.location.href = "/ngo-dashboard";
+    if (role === "restaurant") window.location.href = "/restaurant-dashboard";
+  };
+
+  // Email/Password Auth
+  const handleAuth = async () => {
+    if (!isLogin && !mobileVerified) {
+      setError("Please verify your mobile number first!");
+      return;
+    }
+
+    setLoading(true); // start loading
+
+    try {
+      if (isLogin) {
+        const userCred = await signInWithEmailAndPassword(
+          auth,
+          email,
+          password
+        );
+        const role = await getUserRole(userCred.user.uid);
+        redirectToDashboard(role);
+      } else {
+        const userCred = await createUserWithEmailAndPassword(
+          auth,
+          email,
+          password
+        );
+        await saveUserRole(
+          userCred.user.uid,
+          role,
+          name || email.split("@")[0],
+          email,
+          mobile
+        );
+        redirectToDashboard(role);
+      }
+    } catch (err) {
+      console.log("Auth error:", err.code);
+      if (err.code === "auth/email-already-in-use")
+        setError("Email Already in use !!");
+      else if (err.code === "auth/wrong-password")
+        setError("Invalid password.");
+      else if (err.code === "auth/user-not-found")
+        setError("No account found with this email.");
+      else setError("Something went wrong. Please try again.");
+    } finally {
+      setLoading(false); // stop loading
+    }
+  };
+
+  // Google Sign-In
+  const handleGoogleSignIn = async () => {
+    setLoading(true);
+    try {
+      const userCred = await signInWithPopup(auth, googleProvider);
+      const uid = userCred.user.uid;
+      const role = await getUserRole(uid);
+
+      if (role) {
+        redirectToDashboard(role);
+      } else {
+        setGoogleUser(userCred.user);
+        setShowRoleSelect(true);
+      }
+    } catch (err) {
+      console.error(err.message);
+      setError("Something went wrong with Google Sign-In.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Save role for Google user
+  const handleRoleSelection = async (selectedRole) => {
+    if (!googleUser) return;
+    setLoading(true);
+    await saveUserRole(
+      googleUser.uid,
+      selectedRole,
+      googleUser.displayName,
+      googleUser.email,
+      ""
+    );
+    setShowRoleSelect(false);
+    redirectToDashboard(selectedRole);
+    setLoading(false);
+  };
+
+  // GSAP fade for errors
+  useEffect(() => {
+    if (error && alertRef.current) {
+      gsap.fromTo(
+        alertRef.current,
+        { opacity: 0, y: -20 },
+        { opacity: 1, y: 0, duration: 0.5, ease: "power3.out" }
+      );
+
+      const timer = setTimeout(() => {
+        gsap.to(alertRef.current, {
+          opacity: 0,
+          y: -20,
+          duration: 0.5,
+          ease: "power3.in",
+          onComplete: () => setError(""),
+        });
+      }, 3000);
+
+      return () => clearTimeout(timer);
+    }
+  }, [error]);
+
+  // Mobile verification
+  const handleVerifyMobile = async () => {
+    if (!mobile) {
+      setError("Please enter your mobile number");
+      return;
+    }
+
+    setLoading(true);
+    // Enable testing mode for localhost
+    if (window.location.hostname === "localhost") {
+      const testOtp = "123456";
+      const otp = prompt(
+        `Enter OTP for test number ${mobile}: (use ${testOtp})`
+      );
+      if (otp === testOtp) {
+        setMobileVerified(true);
+        setError("Mobile Verified Successfully!");
+      } else {
+        setError("Incorrect OTP for test number!");
+      }
+      setLoading(false);
+      return;
+    }
+
+    try {
+      if (!window.recaptchaVerifier) {
+        window.recaptchaVerifier = new RecaptchaVerifier(
+          "recaptcha-container",
+          { size: "invisible" },
+          auth
+        );
+        window.recaptchaVerifier.render();
+      }
+
+      const confirmationResult = await signInWithPhoneNumber(
+        auth,
+        "+91" + mobile,
+        window.recaptchaVerifier
+      );
+      const otp = prompt("Enter the OTP sent to your mobile:");
+      if (!otp) {
+        setLoading(false);
+        return;
+      }
+
+      await confirmationResult.confirm(otp);
+      setMobileVerified(true);
+      setError("Mobile Verified Successfully!");
+    } catch (err) {
+      console.error(err);
+      setError("Failed to verify mobile. Try again.");
+    } finally {
+      setLoading(false);
     }
   };
 
   return (
-    <div className="relative flex items-center justify-center min-h-screen bg-slate-900 font-sans overflow-hidden">
-      {/* Background Glow */}
-      <div className="absolute -top-1/4 -left-1/4 w-[40rem] h-[40rem] bg-orange-500 rounded-full mix-blend-screen filter blur-3xl opacity-20 animate-blob"></div>
-      <div className="absolute -bottom-1/4 -right-1/4 w-[40rem] h-[40rem] bg-orange-400 rounded-full mix-blend-screen filter blur-3xl opacity-20 animate-blob animation-delay-4000"></div>
-
-      <div className="relative bg-slate-800/50 backdrop-blur-sm shadow-2xl shadow-cyan-500/20 rounded-2xl p-8 w-full max-w-md border border-orange-500 z-10">
-        <h2 className="text-3xl font-bold text-center mb-6 text-orange-400 tracking-wider">
-          {isLogin ? "SIGN IN" : "CREATE ACCOUNT"}
+    <div className="relative flex items-center justify-center h-screen bg-slate-900 text-white">
+      {loading && <LoadingSpinner />} {/* Show spinner when loading */}
+      <div className="bg-slate-800 p-6 rounded-lg shadow-xl w-96 border border-orange-500 z-10 relative">
+        <h2 className="text-2xl font-bold text-orange-400 mb-4 text-center">
+          {isLogin ? "Login" : "Register"}
         </h2>
 
-        <form onSubmit={handleSubmit} className="space-y-6">
-          {!isLogin && (
+        {error && (
+          <Stack sx={{ width: "100%", mb: 2 }} ref={alertRef}>
+            <Alert variant="filled" severity="warning">
+              {error}
+            </Alert>
+          </Stack>
+        )}
+
+        {!isLogin && (
+          <>
             <input
               type="text"
-              name="name"
               placeholder="Full Name"
-              value={formData.name}
-              onChange={handleChange}
-              className="w-full p-3 bg-slate-700/50 rounded-lg text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-orange-500 transition-all duration-300"
-              required
+              className="w-full p-2 mb-3 bg-slate-700 rounded"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
             />
-          )}
 
-          <input
-            type="email"
-            name="email"
-            placeholder="Email Address"
-            value={formData.email}
-            onChange={handleChange}
-            className="w-full p-3 bg-slate-700/50 rounded-lg text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-orange-500 transition-all duration-300"
-            required
-          />
+            <div className="flex mb-3">
+              <input
+                type="tel"
+                placeholder="Mobile Number"
+                className="w-full p-2 bg-slate-700 rounded-l"
+                value={mobile}
+                onChange={(e) => setMobile(e.target.value)}
+              />
+              <button
+                onClick={handleVerifyMobile}
+                className={`p-2 rounded-r font-bold ${
+                  mobileVerified ? "bg-green-500" : "bg-red-500"
+                }`}
+              >
+                {mobileVerified ? "Verified" : "Verify"}
+              </button>
+            </div>
+            <div id="recaptcha-container"></div>
+          </>
+        )}
 
-          <input
-            type="password"
-            name="password"
-            placeholder="Password"
-            value={formData.password}
-            onChange={handleChange}
-            className="w-full p-3 bg-slate-700/50 rounded-lg text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-orange-500 transition-all duration-300"
-            required
-          />
+        <input
+          type="email"
+          placeholder="Email"
+          className="w-full p-2 mb-3 bg-slate-700 rounded"
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+        />
 
-          {!isLogin && (
-            <select
-              name="role"
-              value={formData.role}
-              onChange={handleChange}
-              className="w-full p-3 bg-slate-700/50 border-0 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-orange-500 transition-all duration-300"
-            >
-              <option className="bg-slate-800" value="restaurant">
-                Restaurant
-              </option>
-              <option className="bg-slate-800" value="ngo">
-                NGO
-              </option>
-              <option className="bg-slate-800" value="volunteer">
-                Volunteer
-              </option>
-            </select>
-          )}
+        <input
+          type="password"
+          placeholder="Password"
+          className="w-full p-2 mb-3 bg-slate-700 rounded"
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+        />
 
-          <button
-            type="submit"
-            className="w-full bg-orange-500 text-slate-900 font-bold p-3 rounded-lg hover:bg-orange-400 transition-all duration-300 shadow-md shadow-orange-500/40 hover:shadow-lg hover:shadow-orange-500/60 transform hover:scale-105"
+        {!isLogin && (
+          <select
+            className="w-full p-2 mb-3 bg-slate-700 rounded"
+            value={role}
+            onChange={(e) => setRole(e.target.value)}
           >
-            {isLogin ? "Login" : "Register"}
-          </button>
-        </form>
+            <option value="volunteer">Volunteer</option>
+            <option value="ngo">NGO</option>
+            <option value="restaurant">Restaurant</option>
+          </select>
+        )}
 
-        <p className="text-sm text-center mt-6 text-gray-400">
-          {isLogin ? "Don’t have an account?" : "Already have an account?"}{" "}
-          <button
-            onClick={toggleMode}
-            className="font-semibold text-orange-400 hover:text-orange-300 transition-colors duration-300"
-          >
-            {isLogin ? "Register" : "Login"}
-          </button>
+        <button
+          onClick={handleAuth}
+          disabled={!isLogin && !mobileVerified}
+          className={`w-full ${
+            !isLogin && !mobileVerified
+              ? "bg-gray-500 cursor-not-allowed"
+              : "bg-orange-500 hover:bg-orange-400"
+          } text-white font-bold p-2 rounded-lg transition`}
+        >
+          {isLogin ? "Login" : "Register"}
+        </button>
+
+        <p
+          onClick={() => setIsLogin(!isLogin)}
+          className="mt-4 text-center text-sm text-orange-300 cursor-pointer hover:underline"
+        >
+          {isLogin
+            ? "New user? Register here"
+            : "Already have an account? Login"}
         </p>
+
+        <div className="mt-6">
+          <button
+            onClick={handleGoogleSignIn}
+            className="w-full bg-red-500 text-white font-bold p-2 rounded-lg hover:bg-red-400 transition"
+          >
+            <GoogleIcon /> <br /> Continue with Google
+          </button>
+        </div>
       </div>
-
-      <style jsx global>{`
-        html,
-        body {
-          overflow-x: hidden;
-          overflow-y: hidden;
-        }
-
-        .animation-delay-2000 {
-          animation-delay: 2s;
-        }
-        .animation-delay-4000 {
-          animation-delay: 4s;
-        }
-        @keyframes blob {
-          0% {
-            transform: translate(0px, 0px) scale(1);
-          }
-          33% {
-            transform: translate(30px, -50px) scale(1.2);
-          }
-          66% {
-            transform: translate(-20px, 20px) scale(0.8);
-          }
-          100% {
-            transform: translate(0px, 0px) scale(1);
-          }
-        }
-        .animate-blob {
-          animation: blob 8s infinite;
-        }
-      `}</style>
+      {showRoleSelect && (
+        <div className="fixed inset-0 flex items-center justify-center bg-black bg-opacity-70 z-50">
+          <div className="bg-slate-800 p-6 rounded-lg shadow-xl border border-orange-500 w-80">
+            <h3 className="text-lg font-bold text-orange-400 mb-4 text-center">
+              Select Your Role
+            </h3>
+            <div className="space-y-3">
+              <button
+                onClick={() => handleRoleSelection("restaurant")}
+                className="w-full bg-orange-500 text-slate-900 font-bold p-2 rounded-lg hover:bg-orange-400 transition"
+              >
+                Restaurant
+              </button>
+              <button
+                onClick={() => handleRoleSelection("ngo")}
+                className="w-full bg-orange-500 text-slate-900 font-bold p-2 rounded-lg hover:bg-orange-400 transition"
+              >
+                NGO
+              </button>
+              <button
+                onClick={() => handleRoleSelection("volunteer")}
+                className="w-full bg-orange-500 text-slate-900 font-bold p-2 rounded-lg hover:bg-orange-400 transition"
+              >
+                Volunteer
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
